@@ -1,0 +1,574 @@
+Here's the complete, corrected code for the real-time path tracer:
+htmlDownloadCopy code Wrap<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Path Tracer</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            display: block;
+        }
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            background: rgba(0,0,0,0.7);
+            padding: 10px;
+            border-radius: 5px;
+        }
+        #controls label {
+            display: block;
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div id="controls">
+        <label>Samples: <span id="sampleCount">0</span></label>
+        <label>Bounces: <input type="range" id="bounces" min="1" max="10" value="3" step="1"></label>
+        <label>Move: WASD, Mouse to look</label>
+        <button id="reset">Reset</button>
+    </div>
+
+    <script>
+        // Vertex shader - simple pass-through
+        const vertexShaderSource = `
+            attribute vec2 a_position;
+            void main() {
+                gl_Position = vec4(a_position, 0.0, 1.0);
+            }
+        `;
+
+        // Fragment shader - path tracing implementation
+        const fragmentShaderSource = `
+            precision highp float;
+            
+            uniform vec2 u_resolution;
+            uniform float u_time;
+            uniform int u_frame;
+            uniform vec3 u_cameraPos;
+            uniform vec3 u_cameraDir;
+            uniform vec3 u_cameraUp;
+            uniform vec3 u_cameraRight;
+            uniform int u_maxBounces;
+            uniform sampler2D u_previousFrame;
+            
+            // Random number generation
+            float random(vec2 st) {
+                return fract(sin(dot(st.xy, vec2(12.9898, 78.233))) * 43758.5453123);
+            }
+            
+            vec3 randomInUnitSphere(vec2 seed) {
+                float theta = random(seed) * 2.0 * 3.14159265;
+                float phi = acos(2.0 * random(seed + vec2(1.0, 0.0)) - 1.0);
+                float r = pow(random(seed + vec2(2.0, 0.0)), 1.0/3.0);
+                
+                float sinPhi = sin(phi);
+                return vec3(
+                    r * sinPhi * cos(theta),
+                    r * sinPhi * sin(theta),
+                    r * cos(phi)
+                );
+            }
+            
+            // Ray structure
+            struct Ray {
+                vec3 origin;
+                vec3 direction;
+            };
+            
+            // Material types
+            const int MAT_DIFFUSE = 0;
+            const int MAT_METAL = 1;
+            const int MAT_EMISSIVE = 2;
+            
+            struct Material {
+                vec3 albedo;
+                float roughness;
+                vec3 emission;
+                int type;
+            };
+            
+            struct HitRecord {
+                vec3 point;
+                vec3 normal;
+                float t;
+                Material mat;
+                bool hit;
+            };
+            
+            // Sphere intersection
+            bool hitSphere(vec3 center, float radius, Ray ray, float tMin, float tMax, out HitRecord rec) {
+                vec3 oc = ray.origin - center;
+                float a = dot(ray.direction, ray.direction);
+                float halfB = dot(oc, ray.direction);
+                float c = dot(oc, oc) - radius * radius;
+                float discriminant = halfB * halfB - a * c;
+                
+                if (discriminant < 0.0) return false;
+                
+                float sqrtd = sqrt(discriminant);
+                float root = (-halfB - sqrtd) / a;
+                
+                if (root < tMin || root > tMax) {
+                    root = (-halfB + sqrtd) / a;
+                    if (root < tMin || root > tMax) return false;
+                }
+                
+                rec.t = root;
+                rec.point = ray.origin + root * ray.direction;
+                rec.normal = (rec.point - center) / radius;
+                rec.hit = true;
+                
+                return true;
+            }
+            
+            // Scene intersection
+            bool hitWorld(Ray ray, float tMin, float tMax, out HitRecord rec) {
+                HitRecord tempRec;
+                bool hitAnything = false;
+                float closestSoFar = tMax;
+                
+                // Ground plane
+                float t = -ray.origin.y / ray.direction.y;
+                if (t > tMin && t < closestSoFar && ray.direction.y < 0.0) {
+                    rec.t = t;
+                    rec.point = ray.origin + t * ray.direction;
+                    rec.normal = vec3(0.0, 1.0, 0.0);
+                    rec.mat.albedo = vec3(0.5, 0.5, 0.5);
+                    rec.mat.roughness = 1.0;
+                    rec.mat.emission = vec3(0.0);
+                    rec.mat.type = MAT_DIFFUSE;
+                    hitAnything = true;
+                    closestSoFar = t;
+                }
+                
+                // Sphere 1 - Red diffuse
+                if (hitSphere(vec3(-1.0, 0.5, -1.0), 0.5, ray, tMin, closestSoFar, tempRec)) {
+                    rec = tempRec;
+                    rec.mat.albedo = vec3(0.8, 0.2, 0.2);
+                    rec.mat.roughness = 1.0;
+                    rec.mat.emission = vec3(0.0);
+                    rec.mat.type = MAT_DIFFUSE;
+                    hitAnything = true;
+                    closestSoFar = tempRec.t;
+                }
+                
+                // Sphere 2 - Metal
+                if (hitSphere(vec3(0.0, 0.5, -1.0), 0.5, ray, tMin, closestSoFar, tempRec)) {
+                    rec = tempRec;
+                    rec.mat.albedo = vec3(0.8, 0.8, 0.8);
+                    rec.mat.roughness = 0.1;
+                    rec.mat.emission = vec3(0.0);
+                    rec.mat.type = MAT_METAL;
+                    hitAnything = true;
+                    closestSoFar = tempRec.t;
+                }
+                
+                // Sphere 3 - Light
+                if (hitSphere(vec3(1.0, 0.5, -1.0), 0.5, ray, tMin, closestSoFar, tempRec)) {
+                    rec = tempRec;
+                    rec.mat.albedo = vec3(1.0);
+                    rec.mat.roughness = 0.0;
+                    rec.mat.emission = vec3(5.0, 5.0, 5.0);
+                    rec.mat.type = MAT_EMISSIVE;
+                    hitAnything = true;
+                    closestSoFar = tempRec.t;
+                }
+                
+                // Large light sphere above
+                if (hitSphere(vec3(0.0, 5.0, -1.0), 2.0, ray, tMin, closestSoFar, tempRec)) {
+                    rec = tempRec;
+                    rec.mat.albedo = vec3(1.0);
+                    rec.mat.roughness = 0.0;
+                    rec.mat.emission = vec3(2.0, 2.0, 2.0);
+                    rec.mat.type = MAT_EMISSIVE;
+                    hitAnything = true;
+                    closestSoFar = tempRec.t;
+                }
+                
+                return hitAnything;
+            }
+            
+            // Path tracing
+            vec3 trace(Ray ray, vec2 seed) {
+                vec3 color = vec3(0.0);
+                vec3 throughput = vec3(1.0);
+                
+                for (int bounce = 0; bounce < 10; bounce++) {
+                    if (bounce >= u_maxBounces) break;
+                    
+                    HitRecord rec;
+                    if (!hitWorld(ray, 0.001, 1000.0, rec)) {
+                        // Sky color
+                        float t = 0.5 * (ray.direction.y + 1.0);
+                        color += throughput * mix(vec3(0.5, 0.7, 1.0), vec3(1.0, 1.0, 1.0), t) * 0.5;
+                        break;
+                    }
+                    
+                    // Add emission
+                    color += throughput * rec.mat.emission;
+                    
+                    // Russian roulette
+                    float p = max(max(throughput.r, throughput.g), throughput.b);
+                    if (random(seed + vec2(float(bounce), 0.0)) > p) break;
+                    throughput /= p;
+                    
+                    // Generate new ray based on material
+                    vec3 scattered;
+                    if (rec.mat.type == MAT_DIFFUSE) {
+                        // Lambertian diffuse
+                        scattered = rec.normal + randomInUnitSphere(seed + vec2(float(bounce), 1.0));
+                        if (length(scattered) < 0.001) scattered = rec.normal;
+                        scattered = normalize(scattered);
+                    } else if (rec.mat.type == MAT_METAL) {
+                        // Metal reflection with roughness
+                        vec3 reflected = reflect(ray.direction, rec.normal);
+                        scattered = reflected + rec.mat.roughness * randomInUnitSphere(seed + vec2(float(bounce), 2.0));
+                        scattered = normalize(scattered);
+                        if (dot(scattered, rec.normal) <= 0.0) break;
+                    } else {
+                        // Emissive - stop tracing
+                        break;
+                    }
+                    
+                    ray.origin = rec.point;
+                    ray.direction = scattered;
+                    throughput *= rec.mat.albedo;
+                }
+                
+                return color;
+            }
+            
+            void main() {
+                vec2 uv = gl_FragCoord.xy / u_resolution;
+                vec2 seed = uv + vec2(u_time, u_time * 1.1) + vec2(float(u_frame));
+                
+                // Anti-aliasing offset
+                vec2 offset = (vec2(random(seed), random(seed + vec2(1.0, 0.0))) - 0.5) / u_resolution;
+                vec2 screenPos = (uv + offset) * 2.0 - 1.0;
+                screenPos.x *= u_resolution.x / u_resolution.y;
+                
+                // Create ray
+                Ray ray;
+                ray.origin = u_cameraPos;
+                ray.direction = normalize(
+                    u_cameraDir + 
+                    screenPos.x * u_cameraRight + 
+                    screenPos.y * u_cameraUp
+                );
+                
+                // Trace path
+                vec3 color = trace(ray, seed);
+                
+                // Accumulate with previous frames
+                if (u_frame == 0) {
+                    // First frame - apply tone mapping
+                    color = color / (color + vec3(1.0));
+                    color = pow(color, vec3(1.0/2.2));
+                    gl_FragColor = vec4(color, 1.0);
+                } else {
+                    // Subsequent frames - undo tone mapping on previous frame, accumulate, then reapply
+                    vec3 previousColor = texture2D(u_previousFrame, uv).rgb;
+                    
+                    // Undo tone mapping
+                    previousColor = pow(previousColor, vec3(2.2));
+                    previousColor = previousColor / (vec3(1.0) - previousColor);
+                    
+                    // Accumulate in linear space
+                    float weight = 1.0 / float(u_frame + 1);
+                    color = mix(previousColor, color, weight);
+                    
+                    // Reapply tone mapping
+                    color = color / (color + vec3(1.0));
+                    color = pow(color, vec3(1.0/2.2));
+                    
+                    gl_FragColor = vec4(color, 1.0);
+                }
+            }
+        `;
+
+        // WebGL setup
+        const canvas = document.getElementById('canvas');
+        const gl = canvas.getContext('webgl');
+        
+        if (!gl) {
+            alert('WebGL not supported!');
+            throw new Error('WebGL not supported');
+        }
+
+        // Compile shaders
+        function createShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error('Shader compile error:', gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            
+            return shader;
+        }
+
+        function createProgram(gl, vertexShader, fragmentShader) {
+            const program = gl.createProgram();
+            gl.attachShader(program, vertexShader);
+            gl.attachShader(program, fragmentShader);
+            gl.linkProgram(program);
+            
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                console.error('Program link error:', gl.getProgramInfoLog(program));
+                gl.deleteProgram(program);
+                return null;
+            }
+            
+            return program;
+        }
+
+        const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
+        const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSource);
+        const program = createProgram(gl, vertexShader, fragmentShader);
+
+        // Get uniform locations
+        const uniforms = {
+            resolution: gl.getUniformLocation(program, 'u_resolution'),
+            time: gl.getUniformLocation(program, 'u_time'),
+            frame: gl.getUniformLocation(program, 'u_frame'),
+            cameraPos: gl.getUniformLocation(program, 'u_cameraPos'),
+            cameraDir: gl.getUniformLocation(program, 'u_cameraDir'),
+            cameraUp: gl.getUniformLocation(program, 'u_cameraUp'),
+            cameraRight: gl.getUniformLocation(program, 'u_cameraRight'),
+            maxBounces: gl.getUniformLocation(program, 'u_maxBounces'),
+            previousFrame: gl.getUniformLocation(program, 'u_previousFrame')
+        };
+
+        // Create geometry
+        const positionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+        const positions = new Float32Array([
+            -1, -1,
+             1, -1,
+            -1,  1,
+             1,  1
+        ]);
+        gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+
+        const positionLocation = gl.getAttribLocation(program, 'a_position');
+
+        // Create framebuffers for accumulation
+        function createFramebuffer(width, height) {
+            const framebuffer = gl.createFramebuffer();
+            gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+            
+            const texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+            
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            
+            return { framebuffer, texture };
+        }
+
+        let framebufferA = createFramebuffer(1, 1);
+        let framebufferB = createFramebuffer(1, 1);
+        let currentFramebuffer = framebufferA;
+        let previousFramebuffer = framebufferB;
+
+        // Camera state
+        const camera = {
+            position: [0, 1, 3],
+            rotation: [0, 0],
+            forward: [0, 0, -1],
+            right: [1, 0, 0],
+            up: [0, 1, 0]
+        };
+
+        // Input handling
+        const keys = {};
+        let mouseDown = false;
+        let lastMouseX = 0;
+        let lastMouseY = 0;
+        let frameCount = 0;
+
+        document.addEventListener('keydown', (e) => {
+            keys[e.key.toLowerCase()] = true;
+        });
+
+        document.addEventListener('keyup', (e) => {
+            keys[e.key.toLowerCase()] = false;
+        });
+
+        canvas.addEventListener('mousedown', (e) => {
+            mouseDown = true;
+            lastMouseX = e.clientX;
+            lastMouseY = e.clientY;
+        });
+
+        document.addEventListener('mouseup', () => {
+            mouseDown = false;
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!mouseDown) return;
+            
+            const deltaX = e.clientX - lastMouseX;
+            const deltaY = e.clientY - lastMouseY;
+            
+            camera.rotation[0] -= deltaX * 0.005;
+            camera.rotation[1] = Math.max(-Math.PI/2, Math.min(Math.PI/2, camera.rotation[1] - deltaY * 0.005));
+            
+            updateCamera();
+            frameCount = 0;
+            
+            lastMouseX = e.clientX;
+            lastMouseY = e.clientY;
+        });
+
+        document.getElementById('reset').addEventListener('click', () => {
+            frameCount = 0;
+        });
+
+        document.getElementById('bounces').addEventListener('input', () => {
+            frameCount = 0;
+        });
+
+        function updateCamera() {
+            const yaw = camera.rotation[0];
+            const pitch = camera.rotation[1];
+            
+            camera.forward[0] = Math.sin(yaw) * Math.cos(pitch);
+            camera.forward[1] = Math.sin(pitch);
+            camera.forward[2] = -Math.cos(yaw) * Math.cos(pitch);
+            
+            camera.right[0] = Math.cos(yaw);
+            camera.right[1] = 0;
+            camera.right[2] = Math.sin(yaw);
+            
+            camera.up[0] = -Math.sin(yaw) * Math.sin(pitch);
+            camera.up[1] = Math.cos(pitch);
+            camera.up[2] = Math.cos(yaw) * Math.sin(pitch);
+        }
+
+        function handleInput() {
+            const speed = 0.05;
+            let moved = false;
+            
+            if (keys['w']) {
+                camera.position[0] += camera.forward[0] * speed;
+                camera.position[1] += camera.forward[1] * speed;
+                camera.position[2] += camera.forward[2] * speed;
+                moved = true;
+            }
+            if (keys['s']) {
+                camera.position[0] -= camera.forward[0] * speed;
+                camera.position[1] -= camera.forward[1] * speed;
+                camera.position[2] -= camera.forward[2] * speed;
+                moved = true;
+            }
+            if (keys['a']) {
+                camera.position[0] -= camera.right[0] * speed;
+                camera.position[1] -= camera.right[1] * speed;
+                camera.position[2] -= camera.right[2] * speed;
+                moved = true;
+            }
+            if (keys['d']) {
+                camera.position[0] += camera.right[0] * speed;
+                camera.position[1] += camera.right[1] * speed;
+                camera.position[2] += camera.right[2] * speed;
+                moved = true;
+            }
+            
+            if (moved) {
+                frameCount = 0;
+            }
+        }
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            gl.viewport(0, 0, canvas.width, canvas.height);
+            
+            // Recreate framebuffers
+            framebufferA = createFramebuffer(canvas.width, canvas.height);
+            framebufferB = createFramebuffer(canvas.width, canvas.height);
+            currentFramebuffer = framebufferA;
+            previousFramebuffer = framebufferB;
+            
+            frameCount = 0;
+        }
+
+        window.addEventListener('resize', resize);
+        resize();
+
+        let startTime = Date.now();
+
+        function render() {
+            handleInput();
+            
+            const time = (Date.now() - startTime) * 0.001;
+            
+            // Swap framebuffers
+            [currentFramebuffer, previousFramebuffer] = [previousFramebuffer, currentFramebuffer];
+            
+            // Render to current framebuffer
+            gl.bindFramebuffer(gl.FRAMEBUFFER, currentFramebuffer.framebuffer);
+            
+            gl.useProgram(program);
+            
+            // Set uniforms
+            gl.uniform2f(uniforms.resolution, canvas.width, canvas.height);
+            gl.uniform1f(uniforms.time, time);
+            gl.uniform1i(uniforms.frame, frameCount);
+            gl.uniform3fv(uniforms.cameraPos, camera.position);
+            gl.uniform3fv(uniforms.cameraDir, camera.forward);
+            gl.uniform3fv(uniforms.cameraUp, camera.up);
+            gl.uniform3fv(uniforms.cameraRight, camera.right);
+            gl.uniform1i(uniforms.maxBounces, parseInt(document.getElementById('bounces').value));
+            
+            // Bind previous frame texture
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, previousFramebuffer.texture);
+            gl.uniform1i(uniforms.previousFrame, 0);
+            
+            // Set up vertex attributes
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.enableVertexAttribArray(positionLocation);
+            gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+            
+            // Draw
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            
+            // Copy to screen
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.bindTexture(gl.TEXTURE_2D, currentFramebuffer.texture);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            
+            frameCount++;
+            document.getElementById('sampleCount').textContent = frameCount;
+            
+            requestAnimationFrame(render);
+        }
+
+        updateCamera();
+        render();
+    </script>
+</body>
+</html>
